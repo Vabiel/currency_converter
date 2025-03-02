@@ -1,6 +1,9 @@
+import 'package:currency_converter/blocs/converter_screen/converter_screen_bloc.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import '../providers/currency_provider.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:list_ext/list_ext.dart';
+
+import '../interfaces/rate_repository.dart';
 
 class ConverterScreen extends StatefulWidget {
   const ConverterScreen({super.key});
@@ -10,128 +13,178 @@ class ConverterScreen extends StatefulWidget {
 }
 
 class _ConverterScreenState extends State<ConverterScreen> {
-  late List<TextEditingController> controllers;
+  static const _zero = 0.0;
+  static const _defaultRate = 1.0;
 
-  @override
-  void initState() {
-    super.initState();
-    final provider = Provider.of<CurrencyProvider>(context, listen: false);
-    controllers =
-        provider.selectedCurrencies
-            .map(
-              (currency) => TextEditingController(
-                text: currency['amount'].toStringAsFixed(2),
-              ),
-            )
-            .toList();
-  }
+  final Map<String, TextEditingController> _controllers = {};
+
+  RateData _rates = {};
+  RateData _selectedCurrencies = {};
 
   @override
   void dispose() {
-    for (var controller in controllers) {
-      controller.dispose();
-    }
+    _controllers.forEach((_, controller) => controller.dispose());
     super.dispose();
+  }
+
+  void _recalculateAmounts(String sourceCode) {
+    final sourceAmount = _selectedCurrencies[sourceCode] ?? _zero;
+    final sourceRate = _rates[sourceCode] ?? _defaultRate;
+
+    _selectedCurrencies.forEach((targetCode, _) {
+      if (targetCode != sourceCode) {
+        final targetRate = _rates[targetCode] ?? _defaultRate;
+        _selectedCurrencies[targetCode] =
+            targetRate != _zero
+                ? (sourceAmount * sourceRate) / targetRate
+                : _zero;
+        _controllers[targetCode]?.text = _selectedCurrencies[targetCode]!
+            .toStringAsFixed(2);
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('Конвертер валют')),
-      body: Consumer<CurrencyProvider>(
-        builder: (context, provider, child) {
-          if (provider.rates.isEmpty) {
-            return Center(child: CircularProgressIndicator());
-          }
+      appBar: AppBar(title: const Text('Currency converter')),
+      body: BlocConsumer<ConverterScreenBloc, ConverterScreenState>(
+        listener: (context, state) {
+          if (state is ConverterScreenLoadSuccess) {
+            _rates = state.rates;
+            _selectedCurrencies = Map.from(state.selectedCurrencies);
 
-          // Синхронизируем количество контроллеров с валютами
-          while (controllers.length < provider.selectedCurrencies.length) {
-            controllers.add(
-              TextEditingController(
-                text: provider.selectedCurrencies[controllers.length]['amount']
-                    .toStringAsFixed(2),
-              ),
+            _selectedCurrencies.forEach((code, amount) {
+              if (!_controllers.containsKey(code)) {
+                _controllers[code] = TextEditingController(
+                  text: amount.toStringAsFixed(2),
+                );
+              } else {
+                _controllers[code]?.text = amount.toStringAsFixed(2);
+              }
+            });
+            _controllers.removeWhere(
+              (code, _) => !_selectedCurrencies.containsKey(code),
             );
           }
-          while (controllers.length > provider.selectedCurrencies.length) {
-            controllers.removeLast().dispose();
+        },
+        builder: (context, state) {
+          if (state is ConverterScreenLoadSuccess) {
+            return _buildBody(context, availableCurrencies: state.currencies);
           }
-
-          return Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                Expanded(
-                  child: ListView.builder(
-                    itemCount: provider.selectedCurrencies.length,
-                    itemBuilder: (context, index) {
-                      return Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              keyboardType: TextInputType.number,
-                              decoration: InputDecoration(labelText: 'Сумма'),
-                              controller: controllers[index],
-                              onChanged: (value) {
-                                provider.updateAmount(
-                                  index,
-                                  double.tryParse(value) ?? 0.0,
-                                );
-                                // Обновляем остальные контроллеры
-                                for (
-                                  int i = 0;
-                                  i < provider.selectedCurrencies.length;
-                                  i++
-                                ) {
-                                  if (i != index) {
-                                    controllers[i].text = provider
-                                        .selectedCurrencies[i]['amount']
-                                        .toStringAsFixed(2);
-                                  }
-                                }
-                              },
-                            ),
-                          ),
-                          SizedBox(width: 10),
-                          DropdownButton<String>(
-                            value: provider.selectedCurrencies[index]['code'],
-                            items:
-                                provider
-                                    .getAvailableCodes()
-                                    .map(
-                                      (code) => DropdownMenuItem(
-                                        value: code,
-                                        child: Text(code),
-                                      ),
-                                    )
-                                    .toList(),
-                            onChanged: (newCode) {
-                              if (newCode != null) {
-                                provider.updateCode(index, newCode);
-                              }
-                            },
-                          ),
-                          IconButton(
-                            icon: Icon(Icons.delete),
-                            onPressed: () => provider.removeCurrency(index),
-                          ),
-                        ],
-                      );
-                    },
-                  ),
-                ),
-                if (provider.selectedCurrencies.length < 5)
-                  ElevatedButton(
-                    onPressed: () {
-                      provider.addCurrency(provider.getAvailableCodes()[0]);
-                    },
-                    child: Text('+ Добавить валюту'),
-                  ),
-              ],
-            ),
-          );
+          return const Center(child: CircularProgressIndicator());
         },
       ),
+    );
+  }
+
+  Widget _buildBody(
+    BuildContext context, {
+    required List<String> availableCurrencies,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        children: [
+          Expanded(
+            child: Scrollbar(
+              child: ListView(
+                children:
+                    _selectedCurrencies.entries.map((entry) {
+                      return _buildCurrency(
+                        context,
+                        currencyCode: entry.key,
+                        availableCurrencies: availableCurrencies,
+                      );
+                    }).toList(),
+              ),
+            ),
+          ),
+          if (availableCurrencies.length != _selectedCurrencies.length)
+            _buildAddButton(context, availableCurrencies: availableCurrencies),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCurrency(
+    BuildContext context, {
+    required String currencyCode,
+    required List<String> availableCurrencies,
+  }) {
+    final bloc = context.converterScreenBloc;
+
+    return Row(
+      key: ValueKey(currencyCode),
+      children: [
+        Expanded(
+          child: TextField(
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(),
+            controller: _controllers[currencyCode],
+            onChanged: (value) {
+              final amount = double.tryParse(value) ?? _zero;
+              _selectedCurrencies[currencyCode] = amount;
+              _recalculateAmounts(currencyCode);
+              bloc.changeAmount(currencyCode, amount);
+            },
+          ),
+        ),
+        const SizedBox(width: 10),
+        DropdownButton<String>(
+          value: currencyCode,
+          items: [
+            for (final currency in availableCurrencies)
+              DropdownMenuItem(value: currency, child: Text(currency)),
+          ],
+          onChanged: (newCode) {
+            if (newCode != null && newCode != currencyCode) {
+              final amount = _selectedCurrencies[currencyCode] ?? _zero;
+              bloc.removeCurrency(currencyCode);
+              bloc.addCurrency(newCode);
+              _selectedCurrencies.remove(currencyCode);
+              _selectedCurrencies[newCode] = amount;
+              _controllers[newCode] = TextEditingController(
+                text: amount.toStringAsFixed(2),
+              );
+              _controllers.remove(currencyCode);
+            }
+          },
+        ),
+        _buildRemoveButton(bloc, currencyCode),
+      ],
+    );
+  }
+
+  Widget _buildRemoveButton(ConverterScreenBloc bloc, String currencyCode) {
+    return IconButton(
+      onPressed: () {
+        bloc.removeCurrency(currencyCode);
+        _selectedCurrencies.remove(currencyCode);
+        _controllers.remove(currencyCode);
+      },
+      icon: const Icon(Icons.delete),
+    );
+  }
+
+  Widget _buildAddButton(
+    BuildContext context, {
+    required List<String> availableCurrencies,
+  }) {
+    final bloc = context.converterScreenBloc;
+
+    return FloatingActionButton(
+      onPressed: () {
+        final newCurrency = availableCurrencies.firstWhereOrNull(
+          (code) => !_selectedCurrencies.containsKey(code),
+        );
+        if (newCurrency != null) {
+          bloc.addCurrency(newCurrency);
+          _selectedCurrencies[newCurrency] = _zero;
+          _controllers[newCurrency] = TextEditingController(text: '0.00');
+        }
+      },
+      child: Icon(Icons.add),
     );
   }
 }
