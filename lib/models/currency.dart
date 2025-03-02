@@ -1,14 +1,14 @@
 import 'package:hive/hive.dart';
 
-part 'currency.g.dart'; // Для генерации адаптера Hive
+part 'currency.g.dart';
 
 @HiveType(typeId: 0)
 class Currency {
   @HiveField(0)
-  final String code; // Например, "USD", "RUB"
+  final String code;
 
   @HiveField(1)
-  final double rate; // Курс относительно USD
+  final double rate;
 
   Currency({required this.code, required this.rate});
 }
